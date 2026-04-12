@@ -1,0 +1,16 @@
+[package]
+name = "lrpt-encoder"
+version = "1.0.0"
+edition = "2024"
+description = "Encode images into Meteor-M N2-4 LRPT (Low Rate Picture Transmission) digital signals"
+
+[features]
+default = []
+input-v4l = ["nokhwa", "ctrlc"]
+
+[dependencies]
+hound = "3.5"
+image = "0.25"
+clap = { version = "4.4", features = ["derive"] }
+nokhwa = { version = "0.10", features = ["input-v4l"], optional = true }
+ctrlc = { version = "3.4", optional = true }
