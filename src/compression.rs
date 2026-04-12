@@ -98,6 +98,7 @@ fn forward_dct(block: &[[i16; MCU_SIZE]; MCU_SIZE]) -> [[f32; MCU_SIZE]; MCU_SIZ
 
 /// Quantize DCT coefficients and apply zigzag scan
 fn quantize_zigzag(dct: &[[f32; MCU_SIZE]; MCU_SIZE], qt: &[u16; 64]) -> [i16; 64] {
+    // `flat` is in entropy-coded coefficient order expected by the LRPT decoder.
     let mut flat = [0i16; 64];
 
     // Flatten 2D to 1D in row-major order
@@ -108,10 +109,11 @@ fn quantize_zigzag(dct: &[[f32; MCU_SIZE]; MCU_SIZE], qt: &[u16; 64]) -> [i16; 6
         }
     }
 
-    // Zigzag scan and quantize
-    for i in 0..64 {
-        let idx = ZIGZAG[i];
-        flat[i] = (linear[idx] / qt[i] as f32).round() as i16;
+    // Quantize in row-major coefficient space, then place each coefficient in
+    // its LRPT entropy index slot.
+    for x in 0..64 {
+        let entropy_idx = ZIGZAG[x];
+        flat[entropy_idx] = (linear[x] / qt[x] as f32).round() as i16;
     }
 
     flat

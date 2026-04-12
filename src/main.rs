@@ -98,6 +98,10 @@ struct Args {
     /// Optional debug output: write first raw CADU (1024 bytes) before NRZ-M/Conv
     #[arg(long, value_name = "CADU_FILE")]
     dump_first_cadu: Option<PathBuf>,
+
+    /// Optional debug output: write full raw CADU stream before NRZ-M/Conv
+    #[arg(long, value_name = "CADU_STREAM_FILE")]
+    dump_cadu_stream: Option<PathBuf>,
 }
 
 /// Encode image channels into LRPT I/Q samples
@@ -185,19 +189,39 @@ fn encode_channels(
     // Encode each VCDU through the channel coding chain
     eprintln!("Applying channel coding (RS + Scramble + NRZ-M + Conv)...");
     let mut encoded_cadus: Vec<Vec<u8>> = Vec::with_capacity(vcdus.len());
+    let mut raw_cadu_stream: Option<Vec<u8>> = args
+        .dump_cadu_stream
+        .as_ref()
+        .map(|_| Vec::with_capacity(vcdus.len() * CADU_SIZE));
     let mut conv_state: u8 = 0;
     let mut nrzm_last_bit: u8 = 0;
     for (idx, vcdu) in vcdus.iter().enumerate() {
+        let raw_cadu = ccsds::build_cadu(vcdu);
+
         if idx == 0 {
             if let Some(path) = args.dump_first_cadu.as_ref() {
-                let raw_cadu = ccsds::build_cadu(vcdu);
                 match std::fs::write(path, &raw_cadu) {
                     Ok(()) => eprintln!("Wrote first raw CADU to {:?}", path),
                     Err(e) => eprintln!("Warning: failed to write CADU dump to {:?}: {}", path, e),
                 }
             }
         }
-        encoded_cadus.push(ccsds::encode_vcdu_with_state(vcdu, &mut conv_state, &mut nrzm_last_bit));
+
+        if let Some(stream) = raw_cadu_stream.as_mut() {
+            stream.extend_from_slice(&raw_cadu);
+        }
+
+        let diff_cadu = differential::nrzm_encode_bits(&raw_cadu, &mut nrzm_last_bit);
+        encoded_cadus.push(convolutional::encode_with_state(&diff_cadu, &mut conv_state));
+    }
+
+    if let Some(path) = args.dump_cadu_stream.as_ref() {
+        if let Some(stream) = raw_cadu_stream.as_ref() {
+            match std::fs::write(path, stream) {
+                Ok(()) => eprintln!("Wrote raw CADU stream ({} frames) to {:?}", vcdus.len(), path),
+                Err(e) => eprintln!("Warning: failed to write CADU stream to {:?}: {}", path, e),
+            }
+        }
     }
 
     // Calculate transmission duration
