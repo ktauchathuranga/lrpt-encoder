@@ -112,11 +112,21 @@ pub fn build_msumr_telemetry_packet(
     build_source_packet(70, seq_count, &payload)
 }
 
-/// VCDU builder - multiplexes source packets into fixed-size VCDUs
+/// VCDU builder - multiplexes source packets into fixed-size VCDUs.
+///
+/// Supports two modes:
+/// - One-shot: [`multiplex`] takes a full list of packets and returns all VCDUs.
+/// - Streaming: [`push_packet`] to add packets incrementally, [`drain_vcdus`]
+///   to emit complete VCDUs so far, and [`finalize`] to pad and emit the
+///   last partial frame.
 pub struct VcduBuilder {
     scid: u8,
     vcid: u8,
     vcdu_counter: u32,
+    /// Bytes waiting to be packed into VCDUs.
+    pending: Vec<u8>,
+    /// Offsets of packet starts within `pending` (relative to start of `pending`).
+    pending_offsets: Vec<usize>,
 }
 
 impl VcduBuilder {
@@ -125,85 +135,103 @@ impl VcduBuilder {
             scid,
             vcid,
             vcdu_counter: 0,
+            pending: Vec::new(),
+            pending_offsets: Vec::new(),
         }
     }
 
-    /// Multiplex a list of source packets into VCDUs
-    /// Returns a list of 892-byte VCDU frames
-    pub fn multiplex(&mut self, packets: &[Vec<u8>]) -> Vec<Vec<u8>> {
-        // Concatenate all packet data
-        let mut packet_stream: Vec<u8> = Vec::new();
-        let mut packet_offsets: Vec<usize> = Vec::new(); // Start offset of each packet
-        for pkt in packets {
-            packet_offsets.push(packet_stream.len());
-            packet_stream.extend_from_slice(pkt);
+    /// Streaming: append one source packet to the pending buffer.
+    pub fn push_packet(&mut self, pkt: &[u8]) {
+        self.pending_offsets.push(self.pending.len());
+        self.pending.extend_from_slice(pkt);
+    }
+
+    /// Streaming: emit all complete VCDUs available given currently-pending bytes.
+    pub fn drain_vcdus(&mut self) -> Vec<Vec<u8>> {
+        let mut out = Vec::new();
+        while self.pending.len() >= MPDU_DATA_SIZE {
+            let vcdu = self.build_one_vcdu(MPDU_DATA_SIZE, false);
+            out.push(vcdu);
+            // Drop the consumed MPDU_DATA_SIZE bytes from pending and shift offsets.
+            self.pending.drain(..MPDU_DATA_SIZE);
+            self.pending_offsets.retain(|&o| o >= MPDU_DATA_SIZE);
+            for off in &mut self.pending_offsets {
+                *off -= MPDU_DATA_SIZE;
+            }
+        }
+        out
+    }
+
+    /// Streaming: flush remaining pending bytes (padded) as a final VCDU.
+    /// If nothing is pending, emits one idle VCDU.
+    pub fn finalize(&mut self) -> Vec<Vec<u8>> {
+        let mut out = Vec::new();
+        if !self.pending.is_empty() {
+            let taken = self.pending.len();
+            let vcdu = self.build_one_vcdu(taken, true);
+            self.pending.clear();
+            self.pending_offsets.clear();
+            out.push(vcdu);
+        } else if self.vcdu_counter == 0 {
+            out.push(self.build_idle_vcdu());
+        }
+        out
+    }
+
+    /// Build one VCDU consuming `take` bytes from the front of `pending`.
+    fn build_one_vcdu(&mut self, take: usize, pad: bool) -> Vec<u8> {
+        let mut vcdu = Vec::with_capacity(VCDU_DATA_SIZE);
+
+        // VCDU Primary Header (6 bytes)
+        let word0: u16 = (0b01 << 14) | ((self.scid as u16) << 6) | (self.vcid as u16 & 0x3F);
+        vcdu.push((word0 >> 8) as u8);
+        vcdu.push(word0 as u8);
+
+        let counter = self.vcdu_counter & 0xFFFFFF;
+        vcdu.push((counter >> 16) as u8);
+        vcdu.push((counter >> 8) as u8);
+        vcdu.push(counter as u8);
+        vcdu.push(0x00);
+
+        // VCDU insert zone (2 bytes)
+        vcdu.push(0x00);
+        vcdu.push(0x00);
+
+        // First header pointer = offset of first packet start within this VCDU's data zone.
+        let mut first_header_ptr: u16 = 0x7FF;
+        for &offset in &self.pending_offsets {
+            if offset < take {
+                first_header_ptr = offset as u16;
+                break;
+            }
         }
 
-        let mut vcdus = Vec::new();
-        let mut stream_pos: usize = 0;
+        vcdu.push((first_header_ptr >> 8) as u8);
+        vcdu.push(first_header_ptr as u8);
 
-        while stream_pos < packet_stream.len() {
-            let mut vcdu = Vec::with_capacity(VCDU_DATA_SIZE);
+        vcdu.extend_from_slice(&self.pending[..take]);
 
-            // VCDU Primary Header (6 bytes)
-            // Version(01) | SCID(8 bits) | VCID(6 bits)
-            let word0: u16 = (0b01 << 14) | ((self.scid as u16) << 6) | (self.vcid as u16 & 0x3F);
-            vcdu.push((word0 >> 8) as u8);
-            vcdu.push(word0 as u8);
-
-            // VCDU Counter (24 bits)
-            let counter = self.vcdu_counter & 0xFFFFFF;
-            vcdu.push((counter >> 16) as u8);
-            vcdu.push((counter >> 8) as u8);
-            vcdu.push(counter as u8);
-
-            // Replay flag(0) | Spare(0000000)
-            vcdu.push(0x00);
-
-            // VCDU insert zone (2 bytes in Meteor LRPT AOS frames)
-            vcdu.push(0x00);
-            vcdu.push(0x00);
-
-            // MPDU Header (2 bytes)
-            // Spare(5 bits) | First Header Pointer(11 bits)
-            // Find if any packet starts within this VCDU's data zone
-            let data_start = stream_pos;
-            let data_end = (stream_pos + MPDU_DATA_SIZE).min(packet_stream.len());
-            let mut first_header_ptr: u16 = 0x7FF; // No packet header in this frame
-            for &offset in &packet_offsets {
-                if offset >= data_start && offset < data_end {
-                    first_header_ptr = (offset - data_start) as u16;
-                    break;
-                }
-            }
-
-            vcdu.push((first_header_ptr >> 8) as u8);
-            vcdu.push(first_header_ptr as u8);
-
-            // Data zone
-            vcdu.extend_from_slice(&packet_stream[data_start..data_end]);
-
-            // Pad with fill data (0xFF) if needed
+        if pad {
             while vcdu.len() < VCDU_DATA_SIZE {
                 vcdu.push(0xFF);
             }
-
-            assert_eq!(vcdu.len(), VCDU_DATA_SIZE);
-            vcdus.push(vcdu);
-
-            stream_pos += MPDU_DATA_SIZE;
-            self.vcdu_counter += 1;
         }
+        assert_eq!(vcdu.len(), VCDU_DATA_SIZE);
 
-        // If no packets at all, generate at least one idle VCDU
-        if vcdus.is_empty() {
-            vcdus.push(self.build_idle_vcdu());
-        }
-
-        vcdus
+        self.vcdu_counter += 1;
+        vcdu
     }
 
-    /// Build an idle (fill) VCDU
+    /// One-shot: multiplex a list of source packets into VCDUs.
+    pub fn multiplex(&mut self, packets: &[Vec<u8>]) -> Vec<Vec<u8>> {
+        for pkt in packets {
+            self.push_packet(pkt);
+        }
+        let mut out = self.drain_vcdus();
+        out.extend(self.finalize());
+        out
+    }
+
     fn build_idle_vcdu(&mut self) -> Vec<u8> {
         let mut vcdu = Vec::with_capacity(VCDU_DATA_SIZE);
 

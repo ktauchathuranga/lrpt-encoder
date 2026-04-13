@@ -56,12 +56,11 @@ class LRPTTransmitter(gr.top_block):
         # Combine into complex
         self.float_to_complex = blocks.float_to_complex(1)
 
-        # Rational resampler: 288000 → 2000000
-        # 2000000 / 288000 = 125/18
+        # Rational resampler: 288000 → 2000000 (125/18).
+        # Omit `taps` so GNU Radio auto-designs a correct anti-imaging filter.
         self.resampler = gr_filter.rational_resampler_ccc(
             interpolation=125,
             decimation=18,
-            taps=firdes.low_pass(1.0, sdr_rate, input_rate / 2, input_rate / 10),
         )
 
         # HackRF sink

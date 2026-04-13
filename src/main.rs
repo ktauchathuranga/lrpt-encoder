@@ -363,6 +363,105 @@ fn load_channels(args: &Args) -> Result<[Vec<Vec<u8>>; 3], Box<dyn std::error::E
     Ok([ch1, ch2, ch3])
 }
 
+/// Streaming encode: produce and emit I/Q samples per MCU row so that downstream
+/// consumers (HackRF via stdout pipe) never starve.
+fn encode_channels_streaming(
+    channels: &[Vec<Vec<u8>>; 3],
+    args: &Args,
+    mut write: impl FnMut(&[(f32, f32)]) -> Result<(), Box<dyn std::error::Error>>,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let apids = [args.apid_ch1, args.apid_ch2, args.apid_ch3];
+    let height = channels[0].len();
+    let num_mcu_rows = imaging::mcu_row_count(height);
+
+    eprintln!(
+        "Encoding {} MCU rows across 3 channels ({}x{} pixels) [streaming]",
+        num_mcu_rows, IMAGE_WIDTH, height
+    );
+
+    let day: u16 = args.ccsds_day;
+    let ms_of_day: u32 = args.ccsds_ms;
+    let telemetry_payload = args.telemetry_payload.as_deref();
+
+    let segments_per_line: usize = 14;
+    let mcus_per_segment: usize = MCUS_PER_ROW / segments_per_line;
+    debug_assert_eq!(mcus_per_segment, 14);
+
+    let mut vcdu_builder = ccsds::VcduBuilder::new(args.scid, args.vcid);
+    let mut modulator = modulation::OqpskModulator::new();
+    let mut conv_state: u8 = 0;
+    let mut nrzm_last_bit: u8 = 0;
+    let mut seq_count: u16 = 0;
+    let mut total_vcdus: usize = 0;
+
+    for mcu_row_idx in 0..num_mcu_rows {
+        let timestamp = ms_of_day
+            .wrapping_add((mcu_row_idx as u32).wrapping_mul(500))
+            % 86_400_000;
+
+        for ch in 0..3 {
+            let mcus = imaging::extract_mcu_row(&channels[ch], mcu_row_idx);
+            for seg_idx in 0..segments_per_line {
+                let start = seg_idx * mcus_per_segment;
+                let end = start + mcus_per_segment;
+                let compressed = compression::compress_mcu_row(&mcus[start..end], args.quality);
+                let packet = ccsds::build_msumr_segment_packet(
+                    apids[ch],
+                    seq_count,
+                    day,
+                    timestamp,
+                    start as u8,
+                    args.quality,
+                    &compressed,
+                );
+                vcdu_builder.push_packet(&packet);
+                seq_count = (seq_count + 1) & 0x3FFF;
+            }
+        }
+
+        let telemetry = ccsds::build_msumr_telemetry_packet(
+            seq_count,
+            day,
+            timestamp,
+            args.telemetry_msumr_id,
+            telemetry_payload,
+        );
+        vcdu_builder.push_packet(&telemetry);
+        seq_count = (seq_count + 1) & 0x3FFF;
+
+        // Drain any complete VCDUs produced by this MCU row and stream them out.
+        for vcdu in vcdu_builder.drain_vcdus() {
+            let raw_cadu = ccsds::build_cadu(&vcdu);
+            let diff_cadu = differential::nrzm_encode_bits(&raw_cadu, &mut nrzm_last_bit);
+            let coded = convolutional::encode_with_state(&diff_cadu, &mut conv_state);
+            let samples = modulator.feed(&coded);
+            write(&samples)?;
+            total_vcdus += 1;
+        }
+
+        if (mcu_row_idx + 1) % 25 == 0 || mcu_row_idx == num_mcu_rows - 1 {
+            eprintln!("  Row {}/{} ({} VCDUs sent)", mcu_row_idx + 1, num_mcu_rows, total_vcdus);
+        }
+    }
+
+    // Flush final partial VCDU if any.
+    for vcdu in vcdu_builder.finalize() {
+        let raw_cadu = ccsds::build_cadu(&vcdu);
+        let diff_cadu = differential::nrzm_encode_bits(&raw_cadu, &mut nrzm_last_bit);
+        let coded = convolutional::encode_with_state(&diff_cadu, &mut conv_state);
+        let samples = modulator.feed(&coded);
+        write(&samples)?;
+        total_vcdus += 1;
+    }
+
+    // Drain RRC filter tail so the very last symbols are fully shaped.
+    let tail = modulator.flush();
+    write(&tail)?;
+
+    eprintln!("Streamed {} VCDUs total.", total_vcdus);
+    Ok(())
+}
+
 /// File mode: encode image(s) to output file
 fn run_file_mode(args: &Args) -> Result<(), Box<dyn std::error::Error>> {
     let channels = load_channels(args)?;
@@ -381,11 +480,28 @@ fn run_file_mode(args: &Args) -> Result<(), Box<dyn std::error::Error>> {
         channels
     };
 
+    if args.stdout {
+        // Streaming path: emit samples incrementally so downstream SDR never starves.
+        use std::io::{self, Write};
+        let stdout = io::stdout();
+        let handle = stdout.lock();
+        let mut buffered = io::BufWriter::with_capacity(64 * 1024, handle);
+        encode_channels_streaming(&channels, args, |samples| {
+            for &(i_val, q_val) in samples {
+                let is = (i_val * 32767.0).clamp(-32768.0, 32767.0) as i16;
+                let qs = (q_val * 32767.0).clamp(-32768.0, 32767.0) as i16;
+                buffered.write_all(&is.to_le_bytes())?;
+                buffered.write_all(&qs.to_le_bytes())?;
+            }
+            Ok(())
+        })?;
+        buffered.flush()?;
+        return Ok(());
+    }
+
     let samples = encode_channels(&channels, args);
 
-    if args.stdout {
-        output::write_iq_stdout(&samples)?;
-    } else if let Some(ref out_path) = args.output {
+    if let Some(ref out_path) = args.output {
         let ext = out_path
             .extension()
             .and_then(|e| e.to_str())

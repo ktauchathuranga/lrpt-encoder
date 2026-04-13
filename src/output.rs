@@ -45,6 +45,7 @@ pub fn write_iq_wav(
 
 /// Write I/Q samples as raw interleaved int16 to stdout
 /// Format: [I0_lo, I0_hi, Q0_lo, Q0_hi, I1_lo, I1_hi, Q1_lo, Q1_hi, ...]
+#[allow(dead_code)]
 pub fn write_iq_stdout(samples: &[(f32, f32)]) -> Result<(), Box<dyn std::error::Error>> {
     let stdout = io::stdout();
     let mut out = stdout.lock();
