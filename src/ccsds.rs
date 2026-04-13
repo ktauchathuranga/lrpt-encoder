@@ -88,8 +88,16 @@ pub fn build_msumr_telemetry_packet(
     day: u16,
     ms_of_day: u32,
     msumr_id: u8,
+    payload_override: Option<&[u8]>,
 ) -> Vec<u8> {
-    let mut payload = vec![0u8; 62];
+    let mut payload = payload_override
+        .map(|bytes| bytes.to_vec())
+        .unwrap_or_else(|| vec![0u8; 62]);
+
+    // Ensure required field offsets exist even if a short custom payload is provided.
+    if payload.len() < 21 {
+        payload.resize(21, 0x00);
+    }
 
     payload[0] = (day >> 8) as u8;
     payload[1] = day as u8;
@@ -227,21 +235,6 @@ impl VcduBuilder {
     }
 }
 
-/// Apply the full CCSDS channel coding chain to a VCDU:
-/// RS encode → Scramble → ASM + NRZ-M → Conv encode
-/// Returns the convolutionally-encoded CADU bits as bytes
-pub fn encode_vcdu_with_state(vcdu: &[u8], conv_state: &mut u8, nrzm_last_bit: &mut u8) -> Vec<u8> {
-    use crate::convolutional;
-    use crate::differential;
-    let cadu = build_cadu(vcdu);
-
-    // 4. NRZ-M encode CADU bits (continuous across CADUs)
-    let diff_cadu = differential::nrzm_encode_bits(&cadu, nrzm_last_bit);
-
-    // 5. Convolutional encode (rate 1/2, doubles the bits)
-    convolutional::encode_with_state(&diff_cadu, conv_state)
-}
-
 /// Build one raw CADU (ASM + RS-coded and scrambled frame) before
 /// differential and convolutional coding.
 pub fn build_cadu(vcdu: &[u8]) -> Vec<u8> {
@@ -294,14 +287,11 @@ mod tests {
     }
 
     #[test]
-    fn test_encode_vcdu_output_length() {
+    fn test_build_cadu_length() {
         let vcdu = vec![0u8; VCDU_DATA_SIZE];
-        let mut conv_state: u8 = 0;
-        let mut nrzm_last_bit: u8 = 0;
-        let encoded = encode_vcdu_with_state(&vcdu, &mut conv_state, &mut nrzm_last_bit);
-        // CADU = 1024 bytes = 8192 bits
-        // Conv rate 1/2: 16384 bits = 2048 bytes
-        assert_eq!(encoded.len(), CADU_SIZE * 2);
+        let cadu = build_cadu(&vcdu);
+        assert_eq!(cadu.len(), CADU_SIZE);
+        assert_eq!(&cadu[..4], &CCSDS_ASM);
     }
 
     #[test]

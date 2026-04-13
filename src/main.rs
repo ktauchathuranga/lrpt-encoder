@@ -27,6 +27,72 @@ mod scrambler;
 
 use constants::*;
 
+fn parse_hex_bytes(input: &str) -> Result<Vec<u8>, String> {
+    let trimmed = input.trim();
+    if trimmed.is_empty() {
+        return Err("telemetry payload cannot be empty".to_string());
+    }
+
+    let has_separators = trimmed
+        .chars()
+        .any(|c| c == ',' || c == ':' || c == '-' || c.is_whitespace());
+
+    let mut bytes = Vec::new();
+
+    if has_separators {
+        for (idx, token) in trimmed
+            .split(|c: char| c == ',' || c == ':' || c == '-' || c.is_whitespace())
+            .filter(|t| !t.is_empty())
+            .enumerate()
+        {
+            let token = token
+                .strip_prefix("0x")
+                .or_else(|| token.strip_prefix("0X"))
+                .unwrap_or(token);
+
+            if token.is_empty() || token.len() > 2 {
+                return Err(format!(
+                    "invalid byte '{}' at position {} (expected 1-2 hex digits)",
+                    token,
+                    idx + 1
+                ));
+            }
+
+            let byte = u8::from_str_radix(token, 16)
+                .map_err(|_| format!("invalid hex byte '{}' at position {}", token, idx + 1))?;
+            bytes.push(byte);
+        }
+    } else {
+        let raw = trimmed
+            .strip_prefix("0x")
+            .or_else(|| trimmed.strip_prefix("0X"))
+            .unwrap_or(trimmed);
+
+        if raw.len() % 2 != 0 {
+            return Err(
+                "hex payload without separators must have an even number of digits".to_string(),
+            );
+        }
+
+        for i in (0..raw.len()).step_by(2) {
+            let token = &raw[i..i + 2];
+            let byte =
+                u8::from_str_radix(token, 16).map_err(|_| format!("invalid hex byte '{}'", token))?;
+            bytes.push(byte);
+        }
+    }
+
+    if bytes.is_empty() {
+        return Err("telemetry payload cannot be empty".to_string());
+    }
+
+    if bytes.len() > (u16::MAX as usize + 1) {
+        return Err("telemetry payload too large for CCSDS source packet".to_string());
+    }
+
+    Ok(bytes)
+}
+
 #[derive(Parser, Debug)]
 #[command(name = "lrpt-encoder")]
 #[command(author, version, about = "Encode images into Meteor-M N2-4 LRPT digital signals", long_about = None)]
@@ -95,6 +161,22 @@ struct Args {
     #[arg(long, default_value = "66")]
     apid_ch3: u16,
 
+    /// MSU-MR instrument ID in telemetry (0-15)
+    #[arg(long = "msumr-id", default_value = "4", value_parser = clap::value_parser!(u8).range(0..=15))]
+    telemetry_msumr_id: u8,
+
+    /// CCSDS day (days since 1958-01-01)
+    #[arg(long = "ccsds-day", default_value = "24938")]
+    ccsds_day: u16,
+
+    /// CCSDS timestamp in milliseconds of day
+    #[arg(long = "ccsds-ms", default_value = "43200000", value_parser = clap::value_parser!(u32).range(0..=86_399_999))]
+    ccsds_ms: u32,
+
+    /// APID 70 telemetry payload bytes in hex (AABBCC, AA BB CC, or 0xAA,0xBB)
+    #[arg(long = "telemetry-payload", value_name = "HEX_BYTES", value_parser = parse_hex_bytes)]
+    telemetry_payload: Option<Vec<u8>>,
+
     /// Optional debug output: write first raw CADU (1024 bytes) before NRZ-M/Conv
     #[arg(long, value_name = "CADU_FILE")]
     dump_first_cadu: Option<PathBuf>,
@@ -118,10 +200,9 @@ fn encode_channels(
         num_mcu_rows, IMAGE_WIDTH, height
     );
 
-    // CCSDS day/time (days since 1958-01-01)
-    // Use a fixed timestamp for reproducibility
-    let day: u16 = 24938; // ~2026-04-13
-    let ms_of_day: u32 = 43200000; // noon
+    let day: u16 = args.ccsds_day;
+    let ms_of_day: u32 = args.ccsds_ms;
+    let telemetry_payload = args.telemetry_payload.as_deref();
 
     let mut all_source_packets: Vec<Vec<u8>> = Vec::new();
     let mut seq_count: u16 = 0;
@@ -131,11 +212,17 @@ fn encode_channels(
     let mcus_per_segment: usize = MCUS_PER_ROW / segments_per_line;
     debug_assert_eq!(mcus_per_segment, 14);
 
-    // SatDump can also infer this from telemetry, but users often override sat number.
-    let msumr_id: u8 = 4; // M2-4
+    if let Some(payload) = args.telemetry_payload.as_ref() {
+        eprintln!(
+            "Using custom APID 70 telemetry payload ({} bytes); day/time and MSU-MR ID fields will be updated from CLI options",
+            payload.len()
+        );
+    }
 
     for mcu_row_idx in 0..num_mcu_rows {
-        let timestamp = ms_of_day + (mcu_row_idx as u32 * 500); // ~0.5s per MCU row
+        let timestamp = ms_of_day
+            .wrapping_add((mcu_row_idx as u32).wrapping_mul(500))
+            % 86_400_000;
 
         for ch in 0..3 {
             let mcus = imaging::extract_mcu_row(&channels[ch], mcu_row_idx);
@@ -162,7 +249,13 @@ fn encode_channels(
         }
 
         // Keep the 43-packet cadence expected by the M2-x reader.
-        let telemetry = ccsds::build_msumr_telemetry_packet(seq_count, day, timestamp, msumr_id);
+        let telemetry = ccsds::build_msumr_telemetry_packet(
+            seq_count,
+            day,
+            timestamp,
+            args.telemetry_msumr_id,
+            telemetry_payload,
+        );
         all_source_packets.push(telemetry);
         seq_count = (seq_count + 1) & 0x3FFF;
 
