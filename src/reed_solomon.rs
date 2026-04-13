@@ -5,7 +5,6 @@
 /// Interleave depth: 4
 ///
 /// Input: 892-byte VCDU → Output: 1020-byte coded frame (892 data + 128 parity)
-
 use crate::constants::*;
 
 /// GF(2^8) arithmetic tables
@@ -98,7 +97,10 @@ fn rs_encode_block(gf: &GfTables, genpoly: &[u8; RS_2T + 1], data: &[u8]) -> [u8
     }
 
     let gen_lead = genpoly[RS_2T];
-    assert!(gen_lead != 0, "generator leading coefficient must be non-zero");
+    assert!(
+        gen_lead != 0,
+        "generator leading coefficient must be non-zero"
+    );
 
     // Long division from highest order down to generator order.
     for i in (RS_2T..RS_N).rev() {
@@ -107,7 +109,11 @@ fn rs_encode_block(gf: &GfTables, genpoly: &[u8; RS_2T + 1], data: &[u8]) -> [u8
             continue;
         }
 
-        let q_coeff = if gen_lead == 1 { top } else { gf.div(top, gen_lead) };
+        let q_coeff = if gen_lead == 1 {
+            top
+        } else {
+            gf.div(top, gen_lead)
+        };
         let q_order = i - RS_2T;
 
         for (j, &g) in genpoly.iter().enumerate() {

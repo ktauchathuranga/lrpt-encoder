@@ -5,8 +5,7 @@
 ///
 /// Uses standard JPEG luminance quantization and Huffman tables.
 /// DC coefficients use differential coding (reset per MCU row/segment).
-
-use crate::constants::{JPEG_LUMA_QT, ZIGZAG, MCU_SIZE};
+use crate::constants::{JPEG_LUMA_QT, MCU_SIZE, ZIGZAG};
 use std::f32::consts::PI;
 
 /// Bit-level writer for Huffman-coded output

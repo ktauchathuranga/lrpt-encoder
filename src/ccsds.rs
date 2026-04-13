@@ -6,17 +6,12 @@
 /// - VCDU (Virtual Channel Data Unit)
 ///
 /// Frame structure: VCDU(892 bytes) → RS → Scramble → ASM → Conv → QPSK
-
 use crate::constants::*;
 
 /// Build a CCSDS source packet from a payload.
 ///
 /// The payload is copied as-is after the 6-byte primary header.
-pub fn build_source_packet(
-    apid: u16,
-    seq_count: u16,
-    payload: &[u8],
-) -> Vec<u8> {
+pub fn build_source_packet(apid: u16, seq_count: u16, payload: &[u8]) -> Vec<u8> {
     let packet_data_length = (payload.len() - 1) as u16;
 
     let mut packet = Vec::with_capacity(6 + payload.len());

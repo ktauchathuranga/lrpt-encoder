@@ -8,7 +8,6 @@
 ///
 /// Bit ordering: convolutional encoder emits (G1, G2) pairs packed MSB-first.
 /// Even-indexed bits (G1) → I arm; odd-indexed bits (G2) → Q arm, delayed T/2.
-
 use crate::constants::*;
 use std::f32::consts::PI;
 
@@ -35,8 +34,7 @@ fn rrc_filter(span_symbols: usize, samples_per_symbol: usize, rolloff: f32) -> V
         } else {
             let pi_t = PI * t / t_s;
             let four_alpha_t = 4.0 * alpha * t / t_s;
-            (((1.0 - alpha) * pi_t).sin()
-                + four_alpha_t * ((1.0 + alpha) * pi_t).cos())
+            (((1.0 - alpha) * pi_t).sin() + four_alpha_t * ((1.0 + alpha) * pi_t).cos())
                 / (pi_t * (1.0 - four_alpha_t * four_alpha_t))
                 / t_s
         };
@@ -161,10 +159,18 @@ impl OqpskModulator {
         // Build combined streams: [history | current chunk]
         // We only need to index into them; use function instead of allocation.
         let i_at = |n: usize, i_hist: &[f32], i_up: &[f32]| -> f32 {
-            if n < hist_len { i_hist[n] } else { i_up[n - hist_len] }
+            if n < hist_len {
+                i_hist[n]
+            } else {
+                i_up[n - hist_len]
+            }
         };
         let q_at = |n: usize, q_hist: &[f32], q_up: &[f32]| -> f32 {
-            if n < hist_len { q_hist[n] } else { q_up[n - hist_len] }
+            if n < hist_len {
+                q_hist[n]
+            } else {
+                q_up[n - hist_len]
+            }
         };
 
         let mut output = Vec::with_capacity(chunk_len);
@@ -293,7 +299,9 @@ mod tests {
             assert!(
                 (a.0 - b.0).abs() < 1e-5 && (a.1 - b.1).abs() < 1e-5,
                 "sample {} differs: one_shot={:?} streamed={:?}",
-                idx, a, b
+                idx,
+                a,
+                b
             );
         }
     }

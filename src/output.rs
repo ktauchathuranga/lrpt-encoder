@@ -4,17 +4,13 @@
 /// - 2-channel WAV file (I/Q interleaved, 16-bit, 288 kHz)
 /// - Raw I/Q binary (interleaved float32 or int16)
 /// - Stdout streaming (raw PCM for piping to SDR tools)
-
 use crate::constants::SAMPLE_RATE;
 use hound::{SampleFormat, WavSpec, WavWriter};
 use std::io::{self, Write};
 use std::path::Path;
 
 /// Write I/Q samples to a 2-channel WAV file
-pub fn write_iq_wav(
-    path: &Path,
-    samples: &[(f32, f32)],
-) -> Result<(), Box<dyn std::error::Error>> {
+pub fn write_iq_wav(path: &Path, samples: &[(f32, f32)]) -> Result<(), Box<dyn std::error::Error>> {
     let spec = WavSpec {
         channels: 2,
         sample_rate: SAMPLE_RATE,
@@ -62,10 +58,7 @@ pub fn write_iq_stdout(samples: &[(f32, f32)]) -> Result<(), Box<dyn std::error:
 }
 
 /// Write I/Q samples as raw interleaved float32 binary file
-pub fn write_iq_raw(
-    path: &Path,
-    samples: &[(f32, f32)],
-) -> Result<(), Box<dyn std::error::Error>> {
+pub fn write_iq_raw(path: &Path, samples: &[(f32, f32)]) -> Result<(), Box<dyn std::error::Error>> {
     use std::fs::File;
 
     let mut file = File::create(path)?;
@@ -110,7 +103,10 @@ impl StreamingWavWriter {
         })
     }
 
-    pub fn write_samples(&mut self, samples: &[(f32, f32)]) -> Result<(), Box<dyn std::error::Error>> {
+    pub fn write_samples(
+        &mut self,
+        samples: &[(f32, f32)],
+    ) -> Result<(), Box<dyn std::error::Error>> {
         for &(i_val, q_val) in samples {
             let i_sample = (i_val * 32767.0).clamp(-32768.0, 32767.0) as i16;
             let q_sample = (q_val * 32767.0).clamp(-32768.0, 32767.0) as i16;

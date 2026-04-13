@@ -6,7 +6,6 @@
 ///
 /// For each input bit, produces 2 output bits (G1 first, then G2).
 /// Output is packed MSB-first into bytes.
-
 use crate::constants::{CONV_G1, CONV_G2};
 
 /// Encode data while preserving the 6-bit shift-register state between calls.

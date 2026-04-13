@@ -2,7 +2,6 @@
 ///
 /// Loads images, resizes to LRPT width (1568 pixels), converts to grayscale,
 /// and extracts 8x8 MCU blocks for JPEG compression.
-
 use crate::constants::{IMAGE_WIDTH, MCU_SIZE, MCUS_PER_ROW};
 use image::{GenericImageView, Luma};
 use std::path::Path;

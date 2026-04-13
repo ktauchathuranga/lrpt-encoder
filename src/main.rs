@@ -3,15 +3,15 @@ use clap::Parser;
 use std::io::Write;
 use std::path::PathBuf;
 #[cfg(feature = "input-v4l")]
-use std::sync::atomic::{AtomicBool, Ordering};
-#[cfg(feature = "input-v4l")]
 use std::sync::Arc;
+#[cfg(feature = "input-v4l")]
+use std::sync::atomic::{AtomicBool, Ordering};
 
 #[cfg(feature = "input-v4l")]
 use nokhwa::{
+    Camera,
     pixel_format::RgbFormat,
     utils::{CameraIndex, RequestedFormat, RequestedFormatType},
-    Camera,
 };
 
 mod ccsds;
@@ -76,8 +76,8 @@ fn parse_hex_bytes(input: &str) -> Result<Vec<u8>, String> {
 
         for i in (0..raw.len()).step_by(2) {
             let token = &raw[i..i + 2];
-            let byte =
-                u8::from_str_radix(token, 16).map_err(|_| format!("invalid hex byte '{}'", token))?;
+            let byte = u8::from_str_radix(token, 16)
+                .map_err(|_| format!("invalid hex byte '{}'", token))?;
             bytes.push(byte);
         }
     }
@@ -187,10 +187,7 @@ struct Args {
 }
 
 /// Encode image channels into LRPT I/Q samples
-fn encode_channels(
-    channels: &[Vec<Vec<u8>>; 3],
-    args: &Args,
-) -> Vec<(f32, f32)> {
+fn encode_channels(channels: &[Vec<Vec<u8>>; 3], args: &Args) -> Vec<(f32, f32)> {
     let apids = [args.apid_ch1, args.apid_ch2, args.apid_ch3];
     let height = channels[0].len();
     let num_mcu_rows = imaging::mcu_row_count(height);
@@ -220,9 +217,7 @@ fn encode_channels(
     }
 
     for mcu_row_idx in 0..num_mcu_rows {
-        let timestamp = ms_of_day
-            .wrapping_add((mcu_row_idx as u32).wrapping_mul(500))
-            % 86_400_000;
+        let timestamp = ms_of_day.wrapping_add((mcu_row_idx as u32).wrapping_mul(500)) % 86_400_000;
 
         for ch in 0..3 {
             let mcus = imaging::extract_mcu_row(&channels[ch], mcu_row_idx);
@@ -260,11 +255,7 @@ fn encode_channels(
         seq_count = (seq_count + 1) & 0x3FFF;
 
         if (mcu_row_idx + 1) % 25 == 0 || mcu_row_idx == num_mcu_rows - 1 {
-            eprintln!(
-                "  Compressed MCU row {}/{}",
-                mcu_row_idx + 1,
-                num_mcu_rows
-            );
+            eprintln!("  Compressed MCU row {}/{}", mcu_row_idx + 1, num_mcu_rows);
         }
     }
 
@@ -305,13 +296,20 @@ fn encode_channels(
         }
 
         let diff_cadu = differential::nrzm_encode_bits(&raw_cadu, &mut nrzm_last_bit);
-        encoded_cadus.push(convolutional::encode_with_state(&diff_cadu, &mut conv_state));
+        encoded_cadus.push(convolutional::encode_with_state(
+            &diff_cadu,
+            &mut conv_state,
+        ));
     }
 
     if let Some(path) = args.dump_cadu_stream.as_ref() {
         if let Some(stream) = raw_cadu_stream.as_ref() {
             match std::fs::write(path, stream) {
-                Ok(()) => eprintln!("Wrote raw CADU stream ({} frames) to {:?}", vcdus.len(), path),
+                Ok(()) => eprintln!(
+                    "Wrote raw CADU stream ({} frames) to {:?}",
+                    vcdus.len(),
+                    path
+                ),
                 Err(e) => eprintln!("Warning: failed to write CADU stream to {:?}: {}", path, e),
             }
         }
@@ -334,7 +332,10 @@ fn encode_channels(
 
 /// Load channel data from file arguments
 fn load_channels(args: &Args) -> Result<[Vec<Vec<u8>>; 3], Box<dyn std::error::Error>> {
-    let input = args.input.as_ref().ok_or("Input image is required for file mode")?;
+    let input = args
+        .input
+        .as_ref()
+        .ok_or("Input image is required for file mode")?;
 
     if args.rgb {
         // Split color image into R, G, B channels
@@ -395,9 +396,7 @@ fn encode_channels_streaming(
     let mut total_vcdus: usize = 0;
 
     for mcu_row_idx in 0..num_mcu_rows {
-        let timestamp = ms_of_day
-            .wrapping_add((mcu_row_idx as u32).wrapping_mul(500))
-            % 86_400_000;
+        let timestamp = ms_of_day.wrapping_add((mcu_row_idx as u32).wrapping_mul(500)) % 86_400_000;
 
         for ch in 0..3 {
             let mcus = imaging::extract_mcu_row(&channels[ch], mcu_row_idx);
@@ -440,7 +439,12 @@ fn encode_channels_streaming(
         }
 
         if (mcu_row_idx + 1) % 25 == 0 || mcu_row_idx == num_mcu_rows - 1 {
-            eprintln!("  Row {}/{} ({} VCDUs sent)", mcu_row_idx + 1, num_mcu_rows, total_vcdus);
+            eprintln!(
+                "  Row {}/{} ({} VCDUs sent)",
+                mcu_row_idx + 1,
+                num_mcu_rows,
+                total_vcdus
+            );
         }
     }
 
@@ -543,7 +547,11 @@ fn run_capture_mode(args: &Args) -> Result<(), Box<dyn std::error::Error>> {
 
             let frame = camera.frame()?;
             let rgb_image = frame.decode_image::<RgbFormat>()?;
-            eprintln!("Captured frame {}x{}", rgb_image.width(), rgb_image.height());
+            eprintln!(
+                "Captured frame {}x{}",
+                rgb_image.width(),
+                rgb_image.height()
+            );
 
             let rows = imaging::camera_frame_to_rows(&rgb_image);
             let channels = [rows.clone(), rows.clone(), rows];
@@ -564,7 +572,11 @@ fn run_capture_mode(args: &Args) -> Result<(), Box<dyn std::error::Error>> {
 
             let frame = camera.frame()?;
             let rgb_image = frame.decode_image::<RgbFormat>()?;
-            eprintln!("Captured frame {}x{}", rgb_image.width(), rgb_image.height());
+            eprintln!(
+                "Captured frame {}x{}",
+                rgb_image.width(),
+                rgb_image.height()
+            );
 
             let rows = imaging::camera_frame_to_rows(&rgb_image);
             let channels = [rows.clone(), rows.clone(), rows];
