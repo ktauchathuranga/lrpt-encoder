@@ -4,5 +4,4 @@ Cargo.lock
 *.raw
 *.iq
 *.bin
-output.wav
 glmf_meteor_eng.pdf
