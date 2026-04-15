@@ -1,4 +1,4 @@
-use clap::Parser;
+use clap::{Parser, ValueEnum};
 #[cfg(feature = "input-v4l")]
 use std::io::Write;
 use std::path::PathBuf;
@@ -93,6 +93,22 @@ fn parse_hex_bytes(input: &str) -> Result<Vec<u8>, String> {
     Ok(bytes)
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
+enum StdoutFormat {
+    /// Interleaved int16 LE (default, for GNU Radio / SatDump)
+    Int16,
+    /// Interleaved int8 (for hackrf_transfer -t -)
+    Int8,
+    /// Interleaved float32 LE (for GNU Radio / SoapySDR)
+    Float32,
+}
+
+impl Default for StdoutFormat {
+    fn default() -> Self {
+        StdoutFormat::Int16
+    }
+}
+
 #[derive(Parser, Debug)]
 #[command(name = "lrpt-encoder")]
 #[command(author, version, about = "Encode images into Meteor-M N2-4 LRPT digital signals", long_about = None)]
@@ -124,6 +140,10 @@ struct Args {
     /// Output raw I/Q to stdout (for piping to SDR tools)
     #[arg(long)]
     stdout: bool,
+
+    /// Sample format for stdout output [default: int16]
+    #[arg(long, value_enum, default_value = "int16")]
+    stdout_format: StdoutFormat,
 
     /// Continuous capture mode (Ctrl+C to stop)
     #[arg(long)]
@@ -490,12 +510,31 @@ fn run_file_mode(args: &Args) -> Result<(), Box<dyn std::error::Error>> {
         let stdout = io::stdout();
         let handle = stdout.lock();
         let mut buffered = io::BufWriter::with_capacity(64 * 1024, handle);
+        let fmt = args.stdout_format;
         encode_channels_streaming(&channels, args, |samples| {
-            for &(i_val, q_val) in samples {
-                let is = (i_val * 32767.0).clamp(-32768.0, 32767.0) as i16;
-                let qs = (q_val * 32767.0).clamp(-32768.0, 32767.0) as i16;
-                buffered.write_all(&is.to_le_bytes())?;
-                buffered.write_all(&qs.to_le_bytes())?;
+            match fmt {
+                StdoutFormat::Int16 => {
+                    for &(i_val, q_val) in samples {
+                        let is = (i_val * 32767.0).clamp(-32768.0, 32767.0) as i16;
+                        let qs = (q_val * 32767.0).clamp(-32768.0, 32767.0) as i16;
+                        buffered.write_all(&is.to_le_bytes())?;
+                        buffered.write_all(&qs.to_le_bytes())?;
+                    }
+                }
+                StdoutFormat::Int8 => {
+                    for &(i_val, q_val) in samples {
+                        let is = (i_val * 127.0).clamp(-128.0, 127.0) as i8;
+                        let qs = (q_val * 127.0).clamp(-128.0, 127.0) as i8;
+                        buffered.write_all(&is.to_le_bytes())?;
+                        buffered.write_all(&qs.to_le_bytes())?;
+                    }
+                }
+                StdoutFormat::Float32 => {
+                    for &(i_val, q_val) in samples {
+                        buffered.write_all(&i_val.to_le_bytes())?;
+                        buffered.write_all(&q_val.to_le_bytes())?;
+                    }
+                }
             }
             Ok(())
         })?;

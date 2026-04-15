@@ -29,7 +29,8 @@ Takes an image (or camera feed), runs it through the full CCSDS digital transmis
 
 - **Full satellite-faithful digital chain**: JPEG-like DCT/Huffman compression → CCSDS Space Packets → VCDU multiplexing → Reed-Solomon(255,223) interleave-4 → CCSDS scrambler → NRZ-M differential encoding → rate-1/2 K=7 convolutional coding → OQPSK with RRC pulse shaping
 - **3-channel MSU-MR emulation** (APIDs 64/65/66) with telemetry packet (APID 70) cadence
-- **Output formats**: 2-channel WAV (16-bit I/Q at 288 kHz), raw float32 I/Q, raw int16 stdout streaming
+- **Output formats**: 2-channel WAV (16-bit I/Q at 288 kHz), raw float32 I/Q, stdout streaming (int16/int8/float32)
+- **Direct HackRF support** via `hackrf_stream.py` — upsamples + pipes to `hackrf_transfer` (no GNU Radio / gr-osmosdr needed)
 - **Camera capture mode** (optional, V4L2 via `nokhwa`)
 - **Configurable**: SCID, VCID, APIDs, JPEG quality, CCSDS timestamp, telemetry payload
 - **Debug dumps** for raw pre-modulation CADU inspection
@@ -72,7 +73,8 @@ lrpt-encoder [OPTIONS] [INPUT_IMAGE]
 | Flag | Default | Description |
 |------|---------|-------------|
 | `-o`, `--output <FILE>` | — | Output file (`.wav`, `.raw`, `.bin`, `.iq`) |
-| `--stdout` | off | Stream raw int16 I/Q to stdout (for piping to SDR tools) |
+| `--stdout` | off | Stream raw I/Q to stdout (for piping to SDR tools) |
+| `--stdout-format <FMT>` | `int16` | Stdout sample format: `int16`, `int8`, or `float32` |
 | `-r`, `--repeat <N>` | 1 | Repeat the image N times |
 | `--quality <1-100>` | 80 | JPEG compression quality |
 | `--rgb` | off | Split a color image: R → ch1, G → ch2, B → ch3 |
@@ -126,7 +128,17 @@ Color image split into RGB channels (R → ch1, G → ch2, B → ch3):
 ./target/release/lrpt-encoder a.png --rgb -o output.wav
 ```
 
-Stream to HackRF via GNU Radio companion script:
+Stream directly to HackRF via `hackrf_stream.py` (no GNU Radio needed — works on macOS/Linux):
+
+```sh
+pip install numpy scipy  # one-time setup
+./target/release/lrpt-encoder a.png --stdout --stdout-format int8 2>/dev/null | \
+    python3 hackrf_stream.py --freq 433000000 --gain 0
+```
+
+> `hackrf_stream.py` upsamples 288 kHz → 2 MHz (hackrf_transfer's minimum) and pipes to `hackrf_transfer` automatically.
+
+Stream to HackRF via GNU Radio companion script (Linux, requires gr-osmosdr):
 
 ```sh
 ./target/release/lrpt-encoder a.png --stdout | python3 qpsk_stream.py
@@ -203,6 +215,9 @@ src/
 ├── modulation.rs      OQPSK + RRC pulse shaping
 ├── output.rs          WAV / raw / stdout sinks
 └── main.rs            CLI + encoding pipeline
+
+hackrf_stream.py       HackRF TX via hackrf_transfer (macOS/Linux, no GNU Radio)
+qpsk_stream.py         HackRF TX via GNU Radio + gr-osmosdr (Linux)
 ```
 
 ## Testing
